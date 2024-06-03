@@ -15,11 +15,31 @@ const runner = @import("runner.zig");
 
 pub const std_options = .{
     .log_level = std.log.Level.info,
+    .logFn = localLog,
 };
 
+fn localLog(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    switch (scope) {
+        // .worker => return,
+        else => {},
+    }
+
+    std.log.defaultLog(
+        level,
+        scope,
+        format,
+        args,
+    );
+}
+
 pub const AllCheckers = struct {
-    simple: checks.Checker = checks.SimpleChecker.checker(),
-    smart: checks.Checker = checks.SmartChecker.checker(),
+    // simple: checks.Checker = checks.SimpleChecker.checker(),
+    // smart: checks.Checker = checks.SmartChecker.checker(),
     branchless: checks.Checker = checks.BranchlessChecker.checker(),
 };
 
@@ -34,50 +54,42 @@ pub const AllWorkers = struct {
 };
 
 pub fn main() !void {
+    const scope = std.log.scoped(.main);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
     // const alloc = std.heap.page_allocator;
 
-    // const checker = checks.BranchlessChecker.checker();
-    // const gen = gens.SmartGen.generator();
-    // var worker_instance = workers.ConcurrentWorker.init(gen, checker, 1);
-    // const worker = worker_instance.worker();
-
-    // const list = try worker.work(&alloc, 10_000);
-    // list.deinit();
-
-    var arena_alloc = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_alloc.deinit();
-
-    const alloc = arena_alloc.allocator();
     const config = Config.init(alloc) catch |err| {
         const CfgErr = Config.ConfigError;
         switch (err) {
             CfgErr.InvalidValue => {
-                std.log.err("Invalid option", .{});
+                scope.err("Invalid option", .{});
                 std.process.exit(1);
             },
             CfgErr.OptionWithoutValue => {
-                std.log.err("Didn't find a follow up value", .{});
+                scope.err("Didn't find a follow up value", .{});
                 std.process.exit(1);
             },
             inline else => {
-                std.log.err("Unknown error", .{});
+                scope.err("Unknown error", .{});
                 std.process.exit(1);
             },
         }
     };
 
-    std.log.info(
+    scope.info(
         \\
         \\Input:
         \\  target  : {d}
         \\  warmup  : {d}
-        \\  runs    : {d}
         \\  time    : {d}
         \\  threads : {d}
     , .{
         config.target,
         config.warmup,
-        config.runs,
         config.time_ns,
         config.concurrency,
     });
@@ -86,6 +98,8 @@ pub fn main() !void {
 }
 
 fn runAll(config: Config, alloc: Allocator) !void {
+    const scope = std.log.scoped(.main);
+
     const checker_info = @typeInfo(AllCheckers);
     const gen_info = @typeInfo(AllGenerators);
     const worker_info = @typeInfo(AllWorkers);
@@ -103,42 +117,39 @@ fn runAll(config: Config, alloc: Allocator) !void {
                 var worker_instance = worker_type.init(gen.*, check.*, 16);
                 const worker = worker_instance.worker();
 
-                var arena = std.heap.ArenaAllocator.init(alloc);
-                defer arena.deinit();
-
-                const config_alloc = arena.allocator();
-
-                std.log.debug(
+                scope.debug(
                     "Starting warmup for {s} worker with {s} checker and {s} generator",
                     .{ worker_field.name, checker_field.name, gen_field.name },
                 );
 
+                var arena = std.heap.ArenaAllocator.init(alloc);
+
                 _ = try runner.runMany(
                     worker,
-                    &config_alloc,
+                    &arena,
                     config.target,
                     config.warmup,
                 );
 
                 _ = arena.reset(.retain_capacity);
 
-                std.log.info(
+                scope.info(
                     "Starting timed run for {s} worker with {s} checker and {s} generator",
                     .{ worker_field.name, checker_field.name, gen_field.name },
                 );
 
                 const runs = try runner.runFor(
                     worker,
-                    &config_alloc,
+                    &arena,
                     config.target,
                     config.time_ns,
                 );
 
                 if (runs == 0) {
-                    std.log.warn("Completed 0 runs in alloted time", .{});
+                    scope.warn("Completed 0 runs in alloted time\n", .{});
                 } else {
-                    std.log.info(
-                        "Ran {} times, average runtime {}ms",
+                    scope.info(
+                        "\tRan {} times, average runtime {}ms\n",
                         .{ runs, config.time_ns / (runs * std.time.ns_per_ms) },
                     );
                 }
@@ -147,16 +158,17 @@ fn runAll(config: Config, alloc: Allocator) !void {
     }
 }
 
-test "Run all" {
+test runAll {
     const config = Config{
-        .runs = 5,
-        .warmup = 5,
-        .target = 10_000,
-        .concurrency = 8,
-        .time_ns = 100_000_000,
+        .warmup = 0,
+        .target = 1_000,
+        .time_ns = 10_000_000,
+        .concurrency = 16,
     };
 
-    try runAll(config, std.testing.allocator);
+    const alloc = std.testing.allocator;
+
+    try runAll(config, alloc);
 }
 
 test {

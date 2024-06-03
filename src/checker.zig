@@ -46,6 +46,10 @@ pub const SimpleChecker = struct {
     }
 };
 
+test SimpleChecker {
+    try CheckerTests.tsts(SimpleChecker.checker());
+}
+
 pub const SmartChecker = struct {
     pub fn checker() Checker {
         return Checker.init(&SimpleChecker{});
@@ -67,6 +71,10 @@ pub const SmartChecker = struct {
     }
 };
 
+test SmartChecker {
+    try CheckerTests.tsts(SmartChecker.checker());
+}
+
 pub const BranchlessChecker = struct {
     pub fn checker() Checker {
         return Checker.init(&BranchlessChecker{});
@@ -87,50 +95,50 @@ pub const BranchlessChecker = struct {
     }
 };
 
-test SimpleChecker {
-    const tst = std.testing;
-
-    const CheckerTests = struct {
-        pub fn tsts(checker: Checker) !void {
-            try tst.expect(checker.check(2));
-            try tst.expect(checker.check(3));
-            try tst.expect(checker.check(5));
-            try tst.expect(checker.check(7));
-            try tst.expect(checker.check(11));
-            try tst.expect(checker.check(13));
-            try tst.expect(checker.check(17));
-            try tst.expect(checker.check(19));
-            try tst.expect(checker.check(23));
-            try tst.expect(checker.check(29));
-            try tst.expect(checker.check(31));
-            try tst.expect(checker.check(37));
-            try tst.expect(checker.check(41));
-            try tst.expect(checker.check(43));
-            try tst.expect(checker.check(47));
-            try tst.expect(checker.check(53));
-            try tst.expect(checker.check(59));
-            try tst.expect(checker.check(61));
-            try tst.expect(checker.check(67));
-            try tst.expect(checker.check(71));
-            try tst.expect(checker.check(73));
-            try tst.expect(checker.check(79));
-            try tst.expect(checker.check(83));
-            try tst.expect(checker.check(89));
-            try tst.expect(checker.check(97));
-
-            try tst.expect(!checker.check(0));
-            try tst.expect(!checker.check(1));
-            try tst.expect(!checker.check(4));
-            try tst.expect(!checker.check(6));
-            try tst.expect(!checker.check(8));
-            try tst.expect(!checker.check(9));
-            try tst.expect(!checker.check(10));
-            try tst.expect(!checker.check(25));
-            try tst.expect(!checker.check(27));
-        }
-    };
-
-    try CheckerTests.tsts(SimpleChecker.checker());
-    try CheckerTests.tsts(SmartChecker.checker());
+test BranchlessChecker {
     try CheckerTests.tsts(BranchlessChecker.checker());
 }
+
+const CheckerTests = struct {
+    const tst = std.testing;
+
+    pub fn tsts(checker: Checker) !void {
+        // Primes
+        try tst.expect(checker.check(2));
+        try tst.expect(checker.check(3));
+        try tst.expect(checker.check(5));
+        try tst.expect(checker.check(7));
+        try tst.expect(checker.check(11));
+        try tst.expect(checker.check(13));
+        try tst.expect(checker.check(17));
+        try tst.expect(checker.check(19));
+        try tst.expect(checker.check(23));
+        try tst.expect(checker.check(29));
+        try tst.expect(checker.check(31));
+        try tst.expect(checker.check(37));
+        try tst.expect(checker.check(41));
+        try tst.expect(checker.check(43));
+        try tst.expect(checker.check(47));
+        try tst.expect(checker.check(53));
+        try tst.expect(checker.check(59));
+        try tst.expect(checker.check(61));
+        try tst.expect(checker.check(67));
+        try tst.expect(checker.check(71));
+        try tst.expect(checker.check(73));
+        try tst.expect(checker.check(79));
+        try tst.expect(checker.check(83));
+        try tst.expect(checker.check(89));
+        try tst.expect(checker.check(97));
+
+        // Not primes
+        try tst.expect(!checker.check(0));
+        try tst.expect(!checker.check(1));
+        try tst.expect(!checker.check(4));
+        try tst.expect(!checker.check(6));
+        try tst.expect(!checker.check(8));
+        try tst.expect(!checker.check(9));
+        try tst.expect(!checker.check(10));
+        try tst.expect(!checker.check(25));
+        try tst.expect(!checker.check(27));
+    }
+};

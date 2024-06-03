@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const ThreadSafeAllocator = std.heap.ThreadSafeAllocator;
 
 const generators = @import("candidate_gen.zig");
 const checkers = @import("checker.zig");
@@ -11,7 +13,7 @@ pub const Worker = struct {
     const SelfPtr = *anyopaque;
 
     ptr: SelfPtr,
-    workFn: *const fn (ptr: SelfPtr, alloc: *const Allocator, target: usize) anyerror!std.ArrayList(usize),
+    workFn: *const fn (ptr: SelfPtr, alloc: *const Allocator, target: usize) anyerror!ArrayList(usize),
 
     fn init(ptr: anytype) Worker {
         const T = @TypeOf(ptr);
@@ -24,7 +26,7 @@ pub const Worker = struct {
         const child = ptr_info.Pointer.child;
 
         const wrapper = struct {
-            pub fn inner(pointer: SelfPtr, alloc: *const Allocator, target: usize) anyerror!std.ArrayList(usize) {
+            pub fn inner(pointer: SelfPtr, alloc: *const Allocator, target: usize) anyerror!ArrayList(usize) {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return @call(std.builtin.CallModifier.always_inline, child.work, .{ self, alloc, target });
             }
@@ -40,7 +42,7 @@ pub const Worker = struct {
         self: Worker,
         alloc: *const Allocator,
         target: usize,
-    ) !std.ArrayList(usize) {
+    ) !ArrayList(usize) {
         return self.workFn(self.ptr, alloc, target);
     }
 };
@@ -72,20 +74,33 @@ pub const SimpleWorker = struct {
         self: *const Self,
         alloc: *const Allocator,
         target: usize,
-    ) !std.ArrayList(usize) {
+    ) !ArrayList(usize) {
         const candidates = try self.gen.gen(alloc, target);
         defer candidates.deinit();
 
-        var primes = std.ArrayList(usize).init(alloc.*);
+        var primes = ArrayList(usize).init(alloc.*);
 
         for (candidates.items) |item| {
             if (self.checker.check(item)) {
                 try primes.append(item);
             }
         }
+
         return primes;
     }
 };
+
+test SimpleWorker {
+    const alloc = std.testing.allocator;
+
+    const checker = checkers.BranchlessChecker.checker();
+    const gen = generators.SmartGen.generator();
+    var worker_instance = SimpleWorker.init(gen, checker, 1);
+    const worker = worker_instance.worker();
+
+    const list = try worker.work(&alloc, 100);
+    defer list.deinit();
+}
 
 pub const ConcurrentWorker = struct {
     const Self = @This();
@@ -116,52 +131,57 @@ pub const ConcurrentWorker = struct {
 
     pub fn work(
         self: *const Self,
-        base_alloc: *const Allocator,
+        alloc: *const Allocator,
         target: usize,
-    ) !std.ArrayList(usize) {
-        // Wrap allocator
-        var thread_safe_alloc: std.heap.ThreadSafeAllocator = std.heap.ThreadSafeAllocator{
-            .child_allocator = base_alloc.*,
-        };
-        const alloc = thread_safe_alloc.allocator();
+    ) !ArrayList(usize) {
+        const scope = std.log.scoped(.worker);
 
         // Create candidates
-        const candidates = try self.gen.gen(&alloc, target);
+        const candidates = try self.gen.gen(alloc, target);
         defer candidates.deinit();
-        std.log.debug("Created candidates: size {}", .{candidates.items.len});
+        scope.debug("Created candidates: size {}", .{candidates.items.len});
 
-        // Thread return values
-        var return_lists: std.ArrayList(?std.ArrayList(usize)) =
-            try std.ArrayList(?std.ArrayList(usize)).initCapacity(alloc, self.thread_num);
+        // Initialize thread return lists
+        var return_lists: ArrayList(ArrayList(usize)) =
+            try ArrayList(ArrayList(usize)).initCapacity(alloc.*, self.thread_num);
         defer {
-            for (return_lists.items) |nullable_list| {
-                if (nullable_list) |list| {
-                    list.deinit();
-                }
+            for (return_lists.items) |list| {
+                list.deinit();
             }
             return_lists.deinit();
         }
 
-        return_lists.expandToCapacity();
+        // Wrap allocator for use in threads
+        var ts_alloc = ThreadSafeAllocator{
+            .child_allocator = alloc.*,
+        };
+
+        for (0..return_lists.capacity) |_| {
+            const list = ArrayList(usize).init(ts_alloc.allocator());
+            try return_lists.append(list);
+        }
+
+        // Create error boolean
+        var has_errored = false;
 
         // Calculate slice lengths
         const thread_slice_len: usize = @divTrunc(candidates.items.len, self.thread_num);
-        std.log.debug("Slice len: {}", .{thread_slice_len});
+        scope.debug("Slice len: {}", .{thread_slice_len});
 
         // Populate threads
-        var handles: std.ArrayList(std.Thread) = try std.ArrayList(std.Thread).initCapacity(alloc, self.thread_num);
+        var handles: ArrayList(std.Thread) = try ArrayList(std.Thread).initCapacity(alloc.*, self.thread_num);
         defer handles.deinit();
 
         // Spawn threads
         var slice_idx: usize = 0;
         for (0..self.thread_num - 1) |i| {
             // We already initialized to capacity so the pointer will not be invalid
-            const ptr: *?std.ArrayList(usize) = &return_lists.items[i];
+            const ptr: *ArrayList(usize) = &return_lists.items[i];
 
             const handle = try std.Thread.spawn(.{}, threadFunction, .{
                 self,
                 ptr,
-                &thread_safe_alloc,
+                &has_errored,
                 candidates.items[slice_idx .. slice_idx + thread_slice_len],
             });
 
@@ -172,74 +192,68 @@ pub const ConcurrentWorker = struct {
 
         // Final thread takes up all the remaining numbers
         {
-            const ptr: *?std.ArrayList(usize) = &return_lists.items[self.thread_num - 1];
+            const ptr: *ArrayList(usize) = &return_lists.items[self.thread_num - 1];
             const handle = try std.Thread.spawn(.{}, threadFunction, .{
                 self,
                 ptr,
-                &thread_safe_alloc,
+                &has_errored,
                 candidates.items[slice_idx..],
             });
 
             try handles.append(handle);
         }
 
-        // Output array
-        var primes: std.ArrayList(usize) = std.ArrayList(usize).init(alloc);
-        errdefer primes.deinit();
-
-        for (handles.items, 0..) |handle, i| {
-            errdefer std.log.err("Something broke while joining threads", .{});
-
-            // Make sure the thread is done
+        for (handles.items) |handle| {
             handle.join();
 
-            // The thread either put it's ArrayList in the buffer or put null there
-            const list: std.ArrayList(usize) = return_lists.items[i] orelse return error.ThreadFailure;
-            defer list.deinit();
-
-            // Append to the output, this for some arcane reason fails
-            try primes.appendSlice(list.items);
+            if (has_errored == true) {
+                return error.ThreadFailed;
+            }
         }
-        std.log.debug("Joined all thread", .{});
+        scope.debug("Joined all thread", .{});
+
+        // Output array
+        var primes: ArrayList(usize) = ArrayList(usize).init(alloc.*);
+        errdefer primes.deinit();
+
+        for (return_lists.items) |list| {
+            const slice = list.items;
+
+            try primes.appendSlice(slice);
+        }
 
         return primes;
     }
 
     fn threadFunction(
         self: *const ConcurrentWorker,
-        ptr: *?std.ArrayList(usize),
-        alloc_instance: *std.heap.ThreadSafeAllocator,
+        out_ptr: *ArrayList(usize),
+        err_ptr: *bool,
         slice: []const usize,
     ) !void {
-        errdefer std.log.debug("Thread failed", .{});
-
-        // if something goes wrong, make sure we give null
-        errdefer ptr.* = null;
-
-        const alloc: std.mem.Allocator = alloc_instance.allocator();
-
-        // Create the output array
-        var primes: std.ArrayList(usize) = std.ArrayList(usize).init(alloc);
-        errdefer primes.deinit();
+        errdefer std.log.err("Thread failed", .{});
+        errdefer err_ptr.* = true;
 
         // Do the calculations
         for (slice) |candidate| {
             if (self.checker.check(candidate)) {
-                try primes.append(candidate);
+                try out_ptr.append(candidate);
             }
         }
-
-        // put the output array in the output pointer
-        ptr.* = primes;
     }
 };
 
 test ConcurrentWorker {
-    const checker = checkers.BranchlessChecker.checker();
-    const gen = generators.SmartGen.generator();
-    var worker_instance = ConcurrentWorker.init(gen, checker, 1);
+    const checker = checkers.SimpleChecker.checker();
+    const gen = generators.SimpleGen.generator();
+    var worker_instance = ConcurrentWorker.init(gen, checker, 8);
     const worker = worker_instance.worker();
 
-    const list = try worker.work(&std.testing.allocator, 10_000);
+    const alloc = std.testing.allocator;
+
+    const list = try worker.work(
+        &alloc,
+        10_000,
+    );
     list.deinit();
 }

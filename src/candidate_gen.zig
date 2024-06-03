@@ -54,6 +54,7 @@ pub const SimpleGen = struct {
         target: usize,
     ) GeneratorError!std.ArrayList(usize) {
         var candidates = std.ArrayList(usize).init(alloc.*);
+        errdefer candidates.deinit();
 
         for (0..target + 1) |n| {
             try candidates.append(n);
@@ -64,21 +65,14 @@ pub const SimpleGen = struct {
 };
 
 test SimpleGen {
-    const tst = std.testing;
-
-    const alloc = tst.allocator;
+    const alloc = std.testing.allocator;
     var cands = try SimpleGen.gen(&alloc, 10);
 
     const slice = try cands.toOwnedSlice();
     defer alloc.free(slice);
 
     const expected: []const usize = &[_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
-    try tst.expectEqualSlices(usize, expected, slice);
-}
-
-test "Test leak SimpleGen" {
-    var cands = try SimpleGen.gen(&std.testing.allocator, 1_000_000);
-    defer cands.deinit();
+    try std.testing.expectEqualSlices(usize, expected, slice);
 }
 
 pub const SmartGen = struct {
@@ -112,7 +106,7 @@ pub const SmartGen = struct {
     }
 };
 
-test "SmartGen long" {
+test SmartGen {
     const tst = std.testing;
 
     const alloc = tst.allocator;
