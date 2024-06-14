@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ThreadSafeAllocator = std.heap.ThreadSafeAllocator;
 
 const generators = @import("candidate_gen.zig");
@@ -223,26 +224,21 @@ pub const ConcurrentWorker = struct {
             try handles.append(handle);
         }
 
-        for (handles.items) |handle| {
+        // Output array
+        var primes: ArrayListUnmanaged(usize) = try ArrayListUnmanaged(usize).initCapacity(ts_alloc.allocator(), @max(100, target * (2 / 3)));
+        errdefer primes.deinit(ts_alloc.allocator());
+        for (handles.items, 0..) |handle, idx| {
             handle.join();
 
             if (has_errored == true) {
                 return error.ThreadFailed;
             }
+
+            const return_slice = return_lists.items[idx];
+            try primes.appendSlice(ts_alloc.allocator(), return_slice.items);
         }
         scope.debug("Joined all thread", .{});
-
-        // Output array
-        var primes: ArrayList(usize) = ArrayList(usize).init(alloc.*);
-        errdefer primes.deinit();
-
-        for (return_lists.items) |list| {
-            const slice = list.items;
-
-            try primes.appendSlice(slice);
-        }
-
-        return primes;
+        return primes.toManaged(alloc.*);
     }
 
     fn threadFunction(
