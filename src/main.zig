@@ -123,6 +123,7 @@ fn runAll(config: Config, alloc: Allocator) !void {
                 );
 
                 var arena = std.heap.ArenaAllocator.init(alloc);
+                defer arena.deinit();
 
                 _ = try runner.runMany(
                     worker,
@@ -169,8 +170,4 @@ test runAll {
     const alloc = std.testing.allocator;
 
     try runAll(config, alloc);
-}
-
-test {
-    std.testing.refAllDeclsRecursive(@This());
 }

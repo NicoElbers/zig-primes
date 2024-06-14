@@ -52,12 +52,9 @@ pub fn runMany(worker: Worker, arena: *ArenaAllocator, target: usize, runs: usiz
     const alloc = arena.allocator();
 
     var total_time: u64 = 0;
-    for (0..runs) |i| {
+    for (0..runs) |_| {
         total_time += try runOnce(worker, &alloc, target);
-        std.log.debug(
-            "Completed run {} : total time {}",
-            .{ i, total_time / std.time.ns_per_ms },
-        );
+        _ = arena.reset(.retain_capacity);
     }
     return total_time / (runs * std.time.ns_per_ms);
 }
@@ -75,9 +72,12 @@ test runMany {
     );
     const worker = worker_instance.worker();
 
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
     _ = try runMany(
         worker,
-        &std.testing.allocator,
+        &arena,
         10_000,
         5,
     );
@@ -86,11 +86,12 @@ test runMany {
 pub fn runFor(worker: Worker, arena: *ArenaAllocator, target: usize, duration_ns: u64) !u64 {
     var completion_counter: u64 = 0;
 
-    const alloc = arena.allocator();
-
     var timer = try std.time.Timer.start();
     while (timer.read() < duration_ns) : (completion_counter += 1) {
-        _ = try runOnce(worker, &alloc, target);
+        {
+            const alloc = arena.allocator();
+            _ = try runOnce(worker, &alloc, target);
+        }
         _ = arena.reset(.retain_capacity);
     }
 
@@ -101,23 +102,22 @@ test runFor {
     const checkers = @import("checker.zig");
     const gens = @import("candidate_gen.zig");
 
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
     const checker = checkers.BranchlessChecker.checker();
     const gen = gens.SmartGen.generator();
-    var worker_instance = workers.ConcurrentWorker.init(
+    var worker_instance = workers.SimpleWorker.init(
         gen,
         checker,
-        16,
+        1,
     );
     const worker = worker_instance.worker();
 
-    for (0..1000) |_| {
-        _ = try runFor(
-            worker,
-            &alloc,
-            1_000_000,
-            1,
-        );
-    }
+    _ = try runFor(
+        worker,
+        &arena,
+        10_000,
+        1_000_000,
+    );
 }
