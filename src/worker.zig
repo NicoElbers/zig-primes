@@ -101,6 +101,27 @@ test SimpleWorker {
     defer list.deinit();
 }
 
+test "SimpleWorker.correctness" {
+    const checker = checkers.SimpleChecker.checker();
+    const gen = generators.SimpleGen.generator();
+    var worker_instance = SimpleWorker.init(gen, checker, 8);
+    const worker = worker_instance.worker();
+
+    const alloc = std.testing.allocator;
+
+    const list = try worker.work(
+        &alloc,
+        100,
+    );
+    defer list.deinit();
+
+    try std.testing.expectEqual(25, list.items.len);
+
+    const expected_primes: []const usize = &.{ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 };
+
+    try std.testing.expectEqualSlices(usize, expected_primes, list.items);
+}
+
 pub const ConcurrentWorker = struct {
     const Self = @This();
 
@@ -255,4 +276,25 @@ test ConcurrentWorker {
         10_000,
     );
     list.deinit();
+}
+
+test "ConcurrentWorker.correctness" {
+    const checker = checkers.SimpleChecker.checker();
+    const gen = generators.SimpleGen.generator();
+    var worker_instance = ConcurrentWorker.init(gen, checker, 8);
+    const worker = worker_instance.worker();
+
+    const alloc = std.testing.allocator;
+
+    const list = try worker.work(
+        &alloc,
+        100,
+    );
+    defer list.deinit();
+
+    try std.testing.expectEqual(25, list.items.len);
+
+    const expected_primes: []const usize = &.{ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 };
+
+    try std.testing.expectEqualSlices(usize, expected_primes, list.items);
 }
