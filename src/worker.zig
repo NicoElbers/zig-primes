@@ -78,8 +78,7 @@ pub const SimpleWorker = struct {
         const candidates = try self.gen.gen(alloc, target);
         defer candidates.deinit();
 
-        var primes = ArrayList(usize).init(alloc.*);
-
+        var primes = try ArrayList(usize).initCapacity(alloc.*, @max(10, target * (2 / 3)));
         for (candidates.items) |item| {
             if (self.checker.check(item)) {
                 try primes.append(item);
