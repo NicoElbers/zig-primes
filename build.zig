@@ -39,13 +39,45 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_unit_tests = b.addTest(.{
+    const main_tests = b.addTest(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    const run_main_tests = b.addRunArtifact(main_tests);
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    const runner_tests = b.addTest(.{
+        .root_source_file = b.path("src/runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_runner_tests = b.addRunArtifact(runner_tests);
+
+    const gen_tests = b.addTest(.{
+        .root_source_file = b.path("src/candidate_gen.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_gen_tests = b.addRunArtifact(gen_tests);
+
+    const checker_tests = b.addTest(.{
+        .root_source_file = b.path("src/checker.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_checker_tests = b.addRunArtifact(checker_tests);
+
+    const worker_tests = b.addTest(.{
+        .root_source_file = b.path("src/worker.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_worker_tests = b.addRunArtifact(worker_tests);
+
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_exe_unit_tests.step);
+    test_step.dependOn(&run_main_tests.step);
+    test_step.dependOn(&run_runner_tests.step);
+    test_step.dependOn(&run_gen_tests.step);
+    test_step.dependOn(&run_checker_tests.step);
+    test_step.dependOn(&run_worker_tests.step);
 }
