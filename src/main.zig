@@ -1,173 +1,132 @@
-const std = @import("std");
-const fmt = std.fmt;
-
-const eql = std.mem.eql;
-const Allocator = std.mem.Allocator;
-const parseInt = fmt.parseInt;
-
-const Config = @import("config.zig").Config;
-
-const gens = @import("candidate_gen.zig");
-const checks = @import("checker.zig");
-const workers = @import("worker.zig");
-
-const runner = @import("runner.zig");
-
-pub const std_options = .{
-    .log_level = std.log.Level.info,
-    .logFn = localLog,
-};
-
-fn localLog(
-    comptime level: std.log.Level,
-    comptime scope: @TypeOf(.EnumLiteral),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    switch (scope) {
-        // .worker => return,
-        else => {},
-    }
-
-    std.log.defaultLog(
-        level,
-        scope,
-        format,
-        args,
-    );
-}
-
-pub const AllCheckers = struct {
-    // simple: checks.Checker = checks.SimpleChecker.checker(),
-    // smart: checks.Checker = checks.SmartChecker.checker(),
-    branchless: checks.Checker = checks.BranchlessChecker.checker(),
-};
-
-pub const AllGenerators = struct {
-    simple: gens.Generator = gens.SimpleGen.generator(),
-    smart: gens.Generator = gens.SmartGen.generator(),
-};
-
-pub const AllWorkers = struct {
-    simple: workers.SimpleWorker,
-    concurrent: workers.ConcurrentWorker,
-};
-
 pub fn main() !void {
-    const scope = std.log.scoped(.main);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    std.debug.print("features: {s}\n", .{@import("builtin").cpu.model.name});
 
-    const alloc = arena.allocator();
-    // const alloc = std.heap.page_allocator;
+    const alloc = gpa.allocator();
 
-    const config = Config.init(alloc) catch |err| {
-        const CfgErr = Config.ConfigError;
-        switch (err) {
-            CfgErr.InvalidValue => {
-                scope.err("Invalid option", .{});
-                std.process.exit(1);
-            },
-            CfgErr.OptionWithoutValue => {
-                scope.err("Didn't find a follow up value", .{});
-                std.process.exit(1);
-            },
-            inline else => {
-                scope.err("Unknown error", .{});
-                std.process.exit(1);
-            },
-        }
-    };
+    const limit = 10_000_000;
+    const timeout_ns = std.time.ns_per_s * 5;
 
-    scope.info(
-        \\
-        \\Input:
-        \\  target  : {d}
-        \\  warmup  : {d}
-        \\  time    : {d}
-        \\  threads : {d}
-    , .{
-        config.target,
-        config.warmup,
-        config.time_ns,
-        config.concurrency,
-    });
-
-    try runAll(config, alloc);
+    try runAll(alloc, limit, timeout_ns);
 }
 
-fn runAll(config: Config, alloc: Allocator) !void {
-    const scope = std.log.scoped(.main);
+fn runAll(alloc: Allocator, comptime limit: u32, timeout_ns: u64) !void {
+    inline for (CheckerGenerators) |checker_s| {
+        const checker_gen = checker_s.init();
 
-    const checker_info = @typeInfo(AllCheckers);
-    const gen_info = @typeInfo(AllGenerators);
-    const worker_info = @typeInfo(AllWorkers);
+        inline for (Checkers) |checker_fn| {
+            const Checker = checker_fn(@TypeOf(checker_gen));
+            const checker = Checker.init(checker_gen);
 
-    inline for (worker_info.Struct.fields) |worker_field| {
-        inline for (checker_info.Struct.fields) |checker_field| {
-            inline for (gen_info.Struct.fields) |gen_field| {
-                const gen: *const gens.Generator =
-                    @ptrCast(@alignCast(gen_field.default_value.?));
-                const check: *const checks.Checker =
-                    @ptrCast(@alignCast(checker_field.default_value.?));
+            inline for (Generators) |gen_fn| {
+                const Generator = gen_fn(@TypeOf(checker));
+                const generator = Generator.init(checker);
 
-                const worker_type = worker_field.type;
+                inline for (Workers) |worker_fn| {
+                    const Worker = worker_fn(@TypeOf(generator));
+                    var worker = Worker.init(generator);
 
-                var worker_instance = worker_type.init(gen.*, check.*, 16);
-                const worker = worker_instance.worker();
+                    const res = try run(&worker, alloc, limit, timeout_ns);
 
-                scope.debug(
-                    "Starting warmup for {s} worker with {s} checker and {s} generator",
-                    .{ worker_field.name, checker_field.name, gen_field.name },
-                );
-
-                var arena = std.heap.ArenaAllocator.init(alloc);
-                defer arena.deinit();
-
-                _ = try runner.runMany(
-                    worker,
-                    &arena,
-                    config.target,
-                    config.warmup,
-                );
-
-                _ = arena.reset(.retain_capacity);
-
-                scope.info(
-                    "Starting timed run for {s} worker with {s} checker and {s} generator",
-                    .{ worker_field.name, checker_field.name, gen_field.name },
-                );
-
-                const runs = try runner.runFor(
-                    worker,
-                    &arena,
-                    config.target,
-                    config.time_ns,
-                );
-
-                if (runs == 0) {
-                    scope.warn("Completed 0 runs in alloted time\n", .{});
-                } else {
-                    scope.info(
-                        "\tRan {} times, average runtime {}ms\n",
-                        .{ runs, config.time_ns / (runs * std.time.ns_per_ms) },
-                    );
+                    std.debug.print("{s}:\n\t{any:.2}\n", .{ @typeName(Worker), res });
                 }
             }
         }
     }
 }
 
-test runAll {
-    const config = Config{
-        .warmup = 0,
-        .target = 1_000,
-        .time_ns = 10_000_000,
-        .concurrency = 16,
+const Result = struct {
+    runs: u32,
+    avg_time: u64,
+    total_time: u64,
+
+    pub fn format(value: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+
+        const avg_ms: f128 = @as(f128, @floatFromInt(value.avg_time)) / @as(f128, @floatFromInt(std.time.ns_per_ms));
+        const total_ms: f128 = @as(f128, @floatFromInt(value.total_time)) / @as(f128, @floatFromInt(std.time.ns_per_ms));
+
+        try writer.writeAll("{ avg_time: ");
+        try std.fmt.formatType(avg_ms, "d", options, writer, 5);
+        try writer.writeAll(" ms, total_time: ");
+        try std.fmt.formatType(total_ms, "d", options, writer, 5);
+        try writer.writeAll(" ms }");
+    }
+};
+
+fn run(worker_impl: anytype, alloc: Allocator, comptime limit: u32, timeout_ns: u64) !Result {
+    comptime assert(std.meta.hasFn(@TypeOf(worker_impl.*), "work"));
+
+    var runs: u32 = 0;
+
+    const len = blk: {
+        const test_arr = try worker_impl.work(alloc, limit);
+        defer test_arr.deinit();
+        break :blk test_arr.items.len;
     };
+
+    std.debug.print("Len: {d}\n", .{len});
+
+    var timer = try std.time.Timer.start();
+    while (timer.read() < timeout_ns) : (runs += 1) {
+        const arr = try worker_impl.work(alloc, limit);
+        assert(arr.items.len == len);
+        arr.deinit();
+    }
+
+    const final_time = timer.read();
+    const avg_time = @divTrunc(final_time, runs);
+
+    return .{
+        .runs = runs,
+        .avg_time = avg_time,
+        .total_time = final_time,
+    };
+}
+
+const std = @import("std");
+const checkers = @import("checkers.zig");
+const generators = @import("generators.zig");
+const workers = @import("workers.zig");
+
+const Checkers = checkers.Checkers;
+const Generators = generators.Generators;
+const CheckerGenerators = generators.CheckerGenerators;
+const Workers = workers.Workers;
+
+const Allocator = std.mem.Allocator;
+
+const assert = std.debug.assert;
+
+test "all" {
+    const primes_under_100 = [_]u32{ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 };
+    const limit = 100;
 
     const alloc = std.testing.allocator;
 
-    try runAll(config, alloc);
+    inline for (CheckerGenerators) |checker_s| {
+        const checker_gen = checker_s.init();
+        inline for (Checkers) |checker_fn| {
+            const Checker = checker_fn(@TypeOf(checker_gen));
+            const checker = Checker.init(checker_gen);
+
+            inline for (Generators) |gen_fn| {
+                const Generator = gen_fn(@TypeOf(checker));
+                const generator = Generator.init(checker);
+
+                inline for (Workers) |worker_fn| {
+                    const Worker = worker_fn(@TypeOf(generator));
+                    var worker = Worker.init(generator);
+
+                    const array_list = try worker.work(alloc, limit);
+                    defer array_list.deinit();
+
+                    std.debug.print("Testing: {s}\n", .{@typeName(Worker)});
+                    std.testing.expectEqualSlices(u32, &primes_under_100, array_list.items) catch {};
+                }
+            }
+        }
+    }
 }
